@@ -46,7 +46,7 @@
                     <div class="w-full bg-gray-100 rounded-full h-2 mb-1">
                         <div id="statusProgress" class="bg-blue-600 h-2 rounded-full progress-bar" style="width: 0%"></div>
                     </div>
-                    <p id="statusText" class="text-[9px] font-bold text-gray-400 uppercase text-center tracking-widest">Processing...</p>
+                    <p id="statusText" class="text-[9px] font-bold text-gray-400 uppercase text-center tracking-widest">Ready</p>
                 </div>
 
                 <button id="uploadBtn" onclick="uploadLargeFile()" class="w-full bg-blue-600 text-white px-8 py-4 rounded-xl font-bold hover:bg-blue-700 transition box-shadow active:scale-[0.98]">
@@ -71,7 +71,7 @@
                 </div>
             </div>
             <div id="folderContainer" class="divide-y divide-gray-100">
-                <div class="px-6 py-12 text-gray-300 text-sm italic text-center">Fetching from Ourdatabox...</div>
+                <div class="px-6 py-12 text-gray-300 text-sm italic text-center">Loading Data...</div>
             </div>
         </div>
 
@@ -85,7 +85,7 @@
             </div>
             <div id="adminStatus" class="hidden flex items-center gap-3 text-blue-600 font-bold text-sm">
                 <span class="bg-blue-100 text-blue-600 px-2 py-1 rounded text-[10px]">ADMIN</span>
-                <span>Welcome back, Kalacs</span>
+                <span>Welcome, Kalacs</span>
                 <button onclick="auth.signOut().then(() => location.reload())" class="ml-auto text-gray-400 text-xs">Logout</button>
             </div>
         </div>
@@ -116,8 +116,8 @@
             if (file) document.getElementById('customFileName').value = file.name;
         };
 
-        onAuthStateChanged(auth, (user) => {
-            if (user?.email === "kalacsgaming@gmail.com") {
+        onAuthStateChanged(auth, (u) => {
+            if (u?.email === "kalacsgaming@gmail.com") {
                 isAdmin = true;
                 document.getElementById('loginForm').classList.add('hidden');
                 document.getElementById('adminStatus').classList.remove('hidden');
@@ -131,7 +131,7 @@
             try { await signInWithEmailAndPassword(auth, email, pass); } catch (e) { alert("Access Denied"); }
         };
 
-        // --- ENHANCED UPLOAD ---
+        // --- UPLOAD (Sequential for Stability) ---
         window.uploadLargeFile = async function() {
             const file = document.getElementById('fileItem').files[0];
             const name = document.getElementById('customFileName').value.trim();
@@ -140,9 +140,8 @@
             
             if (!file || !name) return alert("Select a file first.");
             
-            const CHUNK_SIZE = 700000;
+            const CHUNK_SIZE = 600000;
             const reader = new FileReader();
-            
             const status = document.getElementById('statusArea');
             const progress = document.getElementById('statusProgress');
             const text = document.getElementById('statusText');
@@ -159,7 +158,7 @@
                     const header = await addDoc(collection(db, "Ourdatabox"), {
                         folder, name, version, downloads: 0, likes: 0, dislikes: 0,
                         totalChunks, createdAt: new Date(), isHeader: true,
-                        fileSize: (file.size / 1024).toFixed(1) + " KB"
+                        fileSize: (file.size / (1024 * 1024)).toFixed(2) + " MB"
                     });
 
                     for (let i = 0; i < totalChunks; i++) {
@@ -174,73 +173,64 @@
                         progress.style.width = p + '%';
                         text.innerText = `UPLOADING: ${p}%`;
                     }
-                    alert("Success!");
+                    alert("Published!");
                     location.reload();
                 } catch (e) { alert("Upload Failed: " + e.message); }
             };
         };
 
-        // --- ENHANCED DOWNLOAD WITH DELAY & INDEX CHECK ---
+        // --- DOWNLOAD (Blob-based for Large Files) ---
         window.triggerDownload = async (id, name) => {
             const status = document.getElementById('statusArea');
             const progress = document.getElementById('statusProgress');
             const text = document.getElementById('statusText');
 
             status.classList.remove('hidden');
-            progress.style.width = '20%';
-            text.innerText = "Connecting...";
-
-            // Start a safety timeout
-            const timeout = setTimeout(() => {
-                text.innerText = "Still reassembling... checking connection...";
-            }, 3000);
+            progress.style.width = '10%';
+            text.innerText = "Syncing...";
 
             try {
-                // Fetch segments
-                const qChunks = query(
-                    collection(db, "OurChunks"), 
-                    where("parentId", "==", id), 
-                    orderBy("chunkIndex", "asc")
-                );
-                
+                const qChunks = query(collection(db, "OurChunks"), where("parentId", "==", id), orderBy("chunkIndex", "asc"));
                 const sn = await getDocs(qChunks);
-                clearTimeout(timeout); // Data found, stop the warning timer
 
                 if (sn.empty) {
-                    // Delay the error message slightly to be sure it's not a temporary lag
-                    setTimeout(() => {
-                        alert("Error: File segments not found or index is building. Check Console (F12) for a link.");
-                        status.classList.add('hidden');
-                    }, 2000);
+                    alert("Error: Segments missing. Check if index is building in Console (F12).");
+                    status.classList.add('hidden');
                     return;
                 }
 
-                let fullData = "";
+                let base64Parts = [];
                 let count = 0;
                 sn.forEach(doc => {
-                    fullData += doc.data().data;
+                    let chunk = doc.data().data;
+                    if (count === 0 && chunk.includes(",")) chunk = chunk.split(",")[1];
+                    base64Parts.push(chunk);
                     count++;
                     let p = Math.round((count / sn.size) * 100);
                     progress.style.width = p + '%';
-                    text.innerText = `STITCHING: ${p}%`;
+                    text.innerText = `REASSEMBLING: ${p}%`;
                 });
 
-                text.innerText = "READY!";
+                text.innerText = "Finalizing...";
+                const binaryString = atob(base64Parts.join(''));
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+                
+                const blob = new Blob([bytes], { type: 'application/octet-stream' });
+                const blobUrl = URL.createObjectURL(blob);
+
                 const a = document.createElement('a');
-                a.href = fullData; a.download = name;
+                a.href = blobUrl; a.download = name;
                 document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                URL.revokeObjectURL(blobUrl);
 
                 await updateDoc(doc(db, "Ourdatabox", id), { downloads: increment(1) });
+                text.innerText = "DONE!";
                 setTimeout(() => status.classList.add('hidden'), 1500);
 
             } catch (e) {
-                console.error("Critical Download Error:", e);
-                // If it's an index error, the message will contain a URL
-                const errorMsg = e.message.includes("index") ? "Database Indexing Required. See Console (F12) for link." : "Connection Timeout.";
-                setTimeout(() => {
-                    alert("Download Failed: " + errorMsg);
-                    status.classList.add('hidden');
-                }, 3000); // 3 second delay before showing the error
+                alert("Download Error: " + e.message);
+                status.classList.add('hidden');
             }
         };
 
@@ -295,12 +285,12 @@
                 const safeId = 'f-' + folder.replace(/\W/g, '');
                 const section = document.createElement('div');
                 section.innerHTML = `
-                    <div onclick="toggleFolder('${safeId}')" class="cursor-pointer px-6 py-3 bg-gray-50/80 text-[10px] font-black text-gray-500 uppercase flex justify-between items-center hover:bg-gray-100 select-none">
+                    <div onclick="toggleFolder('${safeId}')" class="cursor-pointer px-6 py-3 bg-gray-50/80 text-[10px] font-black text-gray-500 uppercase flex justify-between items-center hover:bg-gray-100">
                         <span>📂 ${folder} (${files.length})</span> <span id="icon-${safeId}">▼</span>
                     </div>
                     <ul id="${safeId}" class="divide-y divide-gray-50">
                         ${files.map(f => `
-                            <li class="px-6 py-4 flex flex-col sm:flex-row sm:justify-between sm:items-center hover:bg-blue-50/10 gap-3 transition">
+                            <li class="px-6 py-4 flex flex-col sm:flex-row sm:justify-between sm:items-center hover:bg-blue-50/10 gap-3">
                                 <div>
                                     <div class="flex items-center gap-2">
                                         <span class="text-sm font-bold text-gray-800">${f.name}</span>
@@ -308,14 +298,14 @@
                                     </div>
                                     <div class="flex gap-2 mt-1">
                                         <span class="text-[9px] font-bold text-gray-400">📥 ${f.downloads}</span>
-                                        <button onclick="vote('${f.id}','up')" class="text-[9px] font-bold text-green-600 hover:underline">👍 ${f.likes}</button>
-                                        <button onclick="vote('${f.id}','down')" class="text-[9px] font-bold text-red-500 hover:underline">👎 ${f.dislikes}</button>
+                                        <button onclick="vote('${f.id}','up')" class="text-[9px] font-bold text-green-600">👍 ${f.likes}</button>
+                                        <button onclick="vote('${f.id}','down')" class="text-[9px] font-bold text-red-500">👎 ${f.dislikes}</button>
                                         <span class="text-[9px] font-bold text-blue-400 ml-1 opacity-60">${f.fileSize || ''}</span>
                                     </div>
                                 </div>
                                 <div class="flex gap-3">
-                                    <button onclick="triggerDownload('${f.id}','${f.name}')" class="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-[10px] font-black hover:bg-blue-600 hover:text-white transition active:scale-95">Download</button>
-                                    ${isAdmin ? `<button onclick="deleteFile('${f.id}')" class="text-red-400 text-[10px] font-black uppercase hover:text-red-600">Remove</button>` : ''}
+                                    <button onclick="triggerDownload('${f.id}','${f.name}')" class="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-[10px] font-black hover:bg-blue-600 hover:text-white transition">Download</button>
+                                    ${isAdmin ? `<button onclick="deleteFile('${f.id}')" class="text-red-400 text-[10px] font-black uppercase">Remove</button>` : ''}
                                 </div>
                             </li>
                         `).join('')}
@@ -324,8 +314,7 @@
             });
         };
 
-        const q = query(collection(db, "Ourdatabox"), orderBy("createdAt", "desc"));
-        onSnapshot(q, (sn) => {
+        onSnapshot(query(collection(db, "Ourdatabox"), orderBy("createdAt", "desc")), (sn) => {
             allFiles = [];
             sn.forEach(d => { if(d.data().isHeader) allFiles.push({id: d.id, ...d.data()}); });
             renderFiles();
