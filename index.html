@@ -3,19 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OurBox | Software Repository</title>
+    <title>OurBox | Repository v2.2</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .box-shadow { box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.39); }
         .admin-glow { border: 1px solid rgba(59, 130, 246, 0.1); box-shadow: 0 0 20px rgba(59, 130, 246, 0.05); }
         .ourbox-logo { height: 110px; width: auto; margin: 0 auto; display: block; }
-        .progress-bar { transition: width 0.3s ease; }
+        .progress-bar { transition: width 0.4s ease; }
+        .version-tag { font-family: monospace; }
     </style>
 </head>
 <body class="bg-gray-50 font-sans text-gray-900 pb-20">
 
     <div class="max-w-3xl mx-auto py-12 px-4">
-        <div class="text-center mb-12">
+        <div class="text-center mb-12 relative">
+            <div class="absolute top-0 right-0 bg-gray-200 text-gray-500 text-[9px] font-bold px-2 py-1 rounded-md version-tag">
+                BUILD v2.2
+            </div>
+
             <svg class="ourbox-logo mb-2" viewBox="0 0 100 90" xmlns="http://www.w3.org/2000/svg">
                 <g stroke="#2D3748" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M50 45 L22 55 L22 75 L50 85 L78 75 L78 55 Z"/>
@@ -46,7 +51,7 @@
                     <div class="w-full bg-gray-100 rounded-full h-2 mb-1">
                         <div id="statusProgress" class="bg-blue-600 h-2 rounded-full progress-bar" style="width: 0%"></div>
                     </div>
-                    <p id="statusText" class="text-[9px] font-bold text-gray-400 uppercase text-center tracking-widest">Ready</p>
+                    <p id="statusText" class="text-[9px] font-bold text-gray-400 uppercase text-center tracking-widest">Awaiting Command</p>
                 </div>
 
                 <button id="uploadBtn" onclick="uploadLargeFile()" class="w-full bg-blue-600 text-white px-8 py-4 rounded-xl font-bold hover:bg-blue-700 transition box-shadow active:scale-[0.98]">
@@ -71,7 +76,7 @@
                 </div>
             </div>
             <div id="folderContainer" class="divide-y divide-gray-100">
-                <div class="px-6 py-12 text-gray-300 text-sm italic text-center">Loading Data...</div>
+                <div class="px-6 py-12 text-gray-300 text-sm italic text-center">Reading Ourdatabox...</div>
             </div>
         </div>
 
@@ -85,7 +90,7 @@
             </div>
             <div id="adminStatus" class="hidden flex items-center gap-3 text-blue-600 font-bold text-sm">
                 <span class="bg-blue-100 text-blue-600 px-2 py-1 rounded text-[10px]">ADMIN</span>
-                <span>Welcome, Kalacs</span>
+                <span>Welcome back, Kalacs</span>
                 <button onclick="auth.signOut().then(() => location.reload())" class="ml-auto text-gray-400 text-xs">Logout</button>
             </div>
         </div>
@@ -109,6 +114,8 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
+        
+        const BUILD_VERSION = "2.2";
         let isAdmin = false, allFiles = [], votedItems = JSON.parse(localStorage.getItem('ourbox_votes') || '[]');
 
         window.autoFillName = () => {
@@ -131,7 +138,7 @@
             try { await signInWithEmailAndPassword(auth, email, pass); } catch (e) { alert("Access Denied"); }
         };
 
-        // --- UPLOAD (Sequential for Stability) ---
+        // --- UPLOAD (Throttled Sequential Logic) ---
         window.uploadLargeFile = async function() {
             const file = document.getElementById('fileItem').files[0];
             const name = document.getElementById('customFileName').value.trim();
@@ -140,7 +147,8 @@
             
             if (!file || !name) return alert("Select a file first.");
             
-            const CHUNK_SIZE = 600000;
+            // Reduced chunk size for 100MB+ stability
+            const CHUNK_SIZE = 500000; 
             const reader = new FileReader();
             const status = document.getElementById('statusArea');
             const progress = document.getElementById('statusProgress');
@@ -169,17 +177,24 @@
                             data: base64.slice(start, start + CHUNK_SIZE),
                             createdAt: new Date()
                         });
+
+                        // Mandatory breather to prevent 100MB network hangs
+                        if (i % 3 === 0) await new Promise(r => setTimeout(r, 150));
+
                         let p = Math.round(((i + 1) / totalChunks) * 100);
                         progress.style.width = p + '%';
-                        text.innerText = `UPLOADING: ${p}%`;
+                        text.innerText = `UPLOADING: ${p}% (${i+1}/${totalChunks})`;
                     }
-                    alert("Published!");
-                    location.reload();
-                } catch (e) { alert("Upload Failed: " + e.message); }
+                    text.innerText = "VERIFIED!";
+                    setTimeout(() => location.reload(), 1000);
+                } catch (e) { 
+                    alert("Network Timeout. Try refreshing.");
+                    document.getElementById('uploadBtn').disabled = false;
+                }
             };
         };
 
-        // --- DOWNLOAD (Blob-based for Large Files) ---
+        // --- DOWNLOAD (Blob Logic) ---
         window.triggerDownload = async (id, name) => {
             const status = document.getElementById('statusArea');
             const progress = document.getElementById('statusProgress');
@@ -187,14 +202,14 @@
 
             status.classList.remove('hidden');
             progress.style.width = '10%';
-            text.innerText = "Syncing...";
+            text.innerText = "Connecting...";
 
             try {
                 const qChunks = query(collection(db, "OurChunks"), where("parentId", "==", id), orderBy("chunkIndex", "asc"));
                 const sn = await getDocs(qChunks);
 
                 if (sn.empty) {
-                    alert("Error: Segments missing. Check if index is building in Console (F12).");
+                    alert("Error: Missing Data. Check Index Status (F12).");
                     status.classList.add('hidden');
                     return;
                 }
@@ -208,10 +223,10 @@
                     count++;
                     let p = Math.round((count / sn.size) * 100);
                     progress.style.width = p + '%';
-                    text.innerText = `REASSEMBLING: ${p}%`;
+                    text.innerText = `STITCHING: ${p}%`;
                 });
 
-                text.innerText = "Finalizing...";
+                text.innerText = "Generating Blob...";
                 const binaryString = atob(base64Parts.join(''));
                 const bytes = new Uint8Array(binaryString.length);
                 for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
@@ -225,11 +240,11 @@
                 URL.revokeObjectURL(blobUrl);
 
                 await updateDoc(doc(db, "Ourdatabox", id), { downloads: increment(1) });
-                text.innerText = "DONE!";
-                setTimeout(() => status.classList.add('hidden'), 1500);
+                text.innerText = "SUCCESS!";
+                setTimeout(() => status.classList.add('hidden'), 2000);
 
             } catch (e) {
-                alert("Download Error: " + e.message);
+                alert("Download Error: Check Console.");
                 status.classList.add('hidden');
             }
         };
@@ -285,12 +300,12 @@
                 const safeId = 'f-' + folder.replace(/\W/g, '');
                 const section = document.createElement('div');
                 section.innerHTML = `
-                    <div onclick="toggleFolder('${safeId}')" class="cursor-pointer px-6 py-3 bg-gray-50/80 text-[10px] font-black text-gray-500 uppercase flex justify-between items-center hover:bg-gray-100">
+                    <div onclick="toggleFolder('${safeId}')" class="cursor-pointer px-6 py-3 bg-gray-50/80 text-[10px] font-black text-gray-500 uppercase flex justify-between items-center hover:bg-gray-100 select-none">
                         <span>📂 ${folder} (${files.length})</span> <span id="icon-${safeId}">▼</span>
                     </div>
                     <ul id="${safeId}" class="divide-y divide-gray-50">
                         ${files.map(f => `
-                            <li class="px-6 py-4 flex flex-col sm:flex-row sm:justify-between sm:items-center hover:bg-blue-50/10 gap-3">
+                            <li class="px-6 py-4 flex flex-col sm:flex-row sm:justify-between sm:items-center hover:bg-blue-50/10 gap-3 transition">
                                 <div>
                                     <div class="flex items-center gap-2">
                                         <span class="text-sm font-bold text-gray-800">${f.name}</span>
@@ -304,8 +319,8 @@
                                     </div>
                                 </div>
                                 <div class="flex gap-3">
-                                    <button onclick="triggerDownload('${f.id}','${f.name}')" class="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-[10px] font-black hover:bg-blue-600 hover:text-white transition">Download</button>
-                                    ${isAdmin ? `<button onclick="deleteFile('${f.id}')" class="text-red-400 text-[10px] font-black uppercase">Remove</button>` : ''}
+                                    <button onclick="triggerDownload('${f.id}','${f.name}')" class="bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-[10px] font-black hover:bg-blue-600 hover:text-white transition active:scale-95">Download</button>
+                                    ${isAdmin ? `<button onclick="deleteFile('${f.id}')" class="text-red-400 text-[10px] font-black uppercase hover:text-red-600">Remove</button>` : ''}
                                 </div>
                             </li>
                         `).join('')}
